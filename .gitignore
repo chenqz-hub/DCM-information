@@ -1,0 +1,11 @@
+# Ignore data and logs directories (raw DICOM data and runtime logs should not be tracked)
+data/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+env/
+venv/
+*.egg-info/
