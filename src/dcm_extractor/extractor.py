@@ -129,84 +129,124 @@ def extract_case_metadata(case_dir: Path, out_dir: Path, desensitize: bool = Fal
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for path in case_dir.rglob("*"):
-        if path.is_file():
+    # If the case folder contains zip archives, prefer aggregating per-zip and skip loose files.
+    zip_paths = list(case_dir.rglob("*.zip"))
+    if zip_paths:
+        for path in zip_paths:
             try:
-                if path.suffix.lower() == ".zip":
-                    # extract zip to a temp directory and aggregate contained DICOM files into one row
-                    with tempfile.TemporaryDirectory() as td:
-                        try:
-                            with zipfile.ZipFile(path, "r") as zf:
-                                zf.extractall(td)
-                        except Exception as e:
-                            LOGGER.warning("Failed to extract zip %s: %s", path, e)
-                            continue
+                # extract zip to a temp directory and aggregate contained DICOM files into one row
+                with tempfile.TemporaryDirectory() as td:
+                    try:
+                        with zipfile.ZipFile(path, "r") as zf:
+                            zf.extractall(td)
+                    except Exception as e:
+                        LOGGER.warning("Failed to extract zip %s: %s", path, e)
+                        continue
 
-                        agg: dict[str, Any] = {}
-                        image_count = 0
-                        series_uids: set[str] = set()
+                    agg: dict[str, Any] = {}
+                    image_count = 0
+                    series_uids: set[str] = set()
 
-                        for inner in Path(td).rglob("*"):
-                            if inner.is_file():
-                                try:
-                                    meta = read_dicom_metadata(inner)
-                                    image_count += 1
-                                    # collect series uid
-                                    sid = meta.get("SeriesInstanceUID")
-                                    if sid:
-                                        series_uids.add(sid)
+                    for inner in Path(td).rglob("*"):
+                        if inner.is_file():
+                            try:
+                                meta = read_dicom_metadata(inner)
+                                image_count += 1
+                                sid = meta.get("SeriesInstanceUID")
+                                if sid:
+                                    series_uids.add(sid)
+                                for k, v in meta.items():
+                                    if k == "FileName":
+                                        continue
+                                    if k not in agg or not agg[k]:
+                                        agg[k] = v
+                            except Exception as e:
+                                LOGGER.warning("Failed to read inner file %s in %s: %s", inner, path, e)
 
-                                    # for each field, keep first non-empty value
-                                    for k, v in meta.items():
-                                        if k == "FileName":
-                                            continue
-                                        if k not in agg or not agg[k]:
-                                            agg[k] = v
-                                except Exception as e:
-                                    LOGGER.warning("Failed to read inner file %s in %s: %s", inner, path, e)
+                    if image_count == 0:
+                        LOGGER.info("No DICOM found in archive %s", path)
+                        continue
 
-                        if image_count == 0:
-                            LOGGER.info("No DICOM found in archive %s", path)
-                            continue
+                    agg_row: Dict[str, Any] = {
+                        "ProjectID": project_id,
+                        "FileName": path.name,
+                        "PatientName": agg.get("PatientName"),
+                        "PatientID": agg.get("PatientID"),
+                        "PatientBirthDate": agg.get("PatientBirthDate"),
+                        "PatientAge": agg.get("PatientAge"),
+                        "PatientSex": agg.get("PatientSex"),
+                        "StudyInstanceUID": agg.get("StudyInstanceUID"),
+                        "SeriesInstanceUID": None,
+                        "StudyDate": agg.get("StudyDate"),
+                        "Modality": agg.get("Modality"),
+                        "Manufacturer": agg.get("Manufacturer"),
+                        "Rows": None,
+                        "Columns": None,
+                        "ImageCount": image_count,
+                        "SeriesCount": len(series_uids),
+                    }
 
-                        # prepare aggregated row
-                        agg_row: Dict[str, Any] = {
-                            "ProjectID": project_id,
-                            "FileName": path.name,
-                            "PatientName": agg.get("PatientName"),
-                            "PatientID": agg.get("PatientID"),
-                            "PatientBirthDate": agg.get("PatientBirthDate"),
-                            "PatientAge": agg.get("PatientAge"),
-                            "PatientSex": agg.get("PatientSex"),
-                            "StudyInstanceUID": agg.get("StudyInstanceUID"),
-                            "SeriesInstanceUID": None,
-                            "StudyDate": agg.get("StudyDate"),
-                            "Modality": agg.get("Modality"),
-                            "Manufacturer": agg.get("Manufacturer"),
-                            "Rows": None,
-                            "Columns": None,
-                            "ImageCount": image_count,
-                            "SeriesCount": len(series_uids),
-                        }
+                    if agg.get("SeriesInstanceUID"):
+                        agg_row["SeriesInstanceUID"] = agg.get("SeriesInstanceUID")
+                    if agg.get("Rows"):
+                        agg_row["Rows"] = agg.get("Rows")
+                    if agg.get("Columns"):
+                        agg_row["Columns"] = agg.get("Columns")
 
-                        # try to fill representative SeriesInstanceUID, Rows, Columns from agg
-                        if agg.get("SeriesInstanceUID"):
-                            agg_row["SeriesInstanceUID"] = agg.get("SeriesInstanceUID")
-                        if agg.get("Rows"):
-                            agg_row["Rows"] = agg.get("Rows")
-                        if agg.get("Columns"):
-                            agg_row["Columns"] = agg.get("Columns")
-
-                        # do not mutate original metadata here; write desensitized copy later if requested
-
-                        rows.append(agg_row)
-                else:
-                    meta = read_dicom_metadata(path)
-                    # attach project id placeholder; actual project id set by caller
-                    meta["ProjectID"] = project_id
-                    rows.append(meta)
+                    rows.append(agg_row)
             except Exception as e:
-                LOGGER.warning("Failed to read %s: %s", path, e)
+                LOGGER.warning("Failed to process zip %s: %s", path, e)
+    else:
+        # No zip archives found: aggregate all DICOM files under the case folder into a single row
+        agg: dict[str, Any] = {}
+        image_count = 0
+        series_uids: set[str] = set()
+        for inner in case_dir.rglob("*"):
+            if inner.is_file():
+                try:
+                    meta = read_dicom_metadata(inner)
+                    image_count += 1
+                    sid = meta.get("SeriesInstanceUID")
+                    if sid:
+                        series_uids.add(sid)
+                    for k, v in meta.items():
+                        if k == "FileName":
+                            continue
+                        if k not in agg or not agg[k]:
+                            agg[k] = v
+                except Exception as e:
+                    LOGGER.warning("Failed to read file %s in %s: %s", inner, case_dir, e)
+
+        if image_count == 0:
+            LOGGER.info("No DICOM files found under %s", case_dir)
+        else:
+            agg_row: Dict[str, Any] = {
+                "ProjectID": project_id,
+                "FileName": f"{case_dir.name}.dir",
+                "PatientName": agg.get("PatientName"),
+                "PatientID": agg.get("PatientID"),
+                "PatientBirthDate": agg.get("PatientBirthDate"),
+                "PatientAge": agg.get("PatientAge"),
+                "PatientSex": agg.get("PatientSex"),
+                "StudyInstanceUID": agg.get("StudyInstanceUID"),
+                "SeriesInstanceUID": None,
+                "StudyDate": agg.get("StudyDate"),
+                "Modality": agg.get("Modality"),
+                "Manufacturer": agg.get("Manufacturer"),
+                "Rows": None,
+                "Columns": None,
+                "ImageCount": image_count,
+                "SeriesCount": len(series_uids),
+            }
+
+            if agg.get("SeriesInstanceUID"):
+                agg_row["SeriesInstanceUID"] = agg.get("SeriesInstanceUID")
+            if agg.get("Rows"):
+                agg_row["Rows"] = agg.get("Rows")
+            if agg.get("Columns"):
+                agg_row["Columns"] = agg.get("Columns")
+
+            rows.append(agg_row)
 
     if not rows:
         LOGGER.info("No DICOM files found under %s", case_dir)

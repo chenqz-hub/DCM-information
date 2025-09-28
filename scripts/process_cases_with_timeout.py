@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", "-o", default="data/output_csv")
     parser.add_argument("--timeout", "-t", type=int, default=300, help="Per-case timeout in seconds")
     parser.add_argument("--move-top-level-zips", action="store_true")
+    parser.add_argument(
+        "--projectid-map",
+        help="Path to JSON file to load/save case->ProjectID mapping (optional)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -55,14 +59,27 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.exception("Failed moving top-level zips")
 
     merged_parts = []
+    # load or prepare project id mapping if provided
+    map_path = Path(args.projectid_map) if getattr(args, "projectid_map", None) else None
+    projectid_map = extractor.load_projectid_map(map_path) if map_path else {}
 
     cases = list(extractor.iter_case_dirs(data_root))
+    # compute starting max id from existing mapping
+    max_existing = max(projectid_map.values(), default=0)
     for idx, case in enumerate(cases, start=1):
+        case_name = case.name
+        if case_name in projectid_map:
+            pid = projectid_map[case_name]
+        else:
+            max_existing += 1
+            pid = max_existing
+            projectid_map[case_name] = pid
+
         LOGGER.info("Processing case %d/%d: %s", idx, len(cases), case)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", prefix=f"case_{idx}_", dir=out_dir) as tf:
             tmp_path = Path(tf.name)
 
-        p = mp.Process(target=_worker, args=(str(case), str(out_dir), idx, str(tmp_path)))
+        p = mp.Process(target=_worker, args=(str(case), str(out_dir), pid, str(tmp_path)))
         p.start()
         p.join(args.timeout)
         if p.is_alive():
@@ -111,6 +128,13 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("Wrote merged CSV (desensitized): %s", des_path)
     except Exception:
         LOGGER.exception("Failed to write desensitized merged CSV")
+
+    # save projectid mapping back to disk if requested
+    try:
+        if map_path:
+            extractor.save_projectid_map(map_path, projectid_map)
+    except Exception:
+        LOGGER.exception("Failed to save projectid map: %s", map_path)
 
     return 0
 

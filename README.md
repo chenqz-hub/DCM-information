@@ -100,5 +100,24 @@ python -m src.dcm_extractor.extractor --data-root data/dicom_cases --out data/ou
 
 - 本仓库把 `data/` 和 `logs/` 整个目录内容列入了 `.gitignore`，请放心把原始 DICOM 数据放入 `data/dicom_cases`。
 - 当数据量大时建议使用 `--merge-all` 生成合并 CSV 后再进行下游分析，以避免逐个文件加载的开销。
+ 
+项目内新增：ProjectID 映射与安全批处理
+
+- `--projectid-map <path>`：传给 `extractor` 或 `scripts/process_cases_with_timeout.py` 的 JSON 文件路径，用于持久化 `case_name -> ProjectID` 的分配。首次运行会为未见过的 case 分配下一个可用整数 ID（从 1 开始），并在运行结束时保存回该 JSON 文件，以便后续重复运行时保持 ID 稳定。
+
+  用法示例（在 timeout wrapper 中使用并保存映射）：
+
+```powershell
+python scripts/process_cases_with_timeout.py -d data/dicom_cases -o data/output_csv --timeout 300 --move-top-level-zips --projectid-map data/output_csv/case_projectid_map.json
+```
+
+- `scripts/process_cases_with_timeout.py`：推荐用于批量处理大数据集（为每个 case 使用独立子进程并设置超时，防止单个 case 卡住整个流程）。脚本现在会在运行结束时自动写入 `--projectid-map` 指定的 JSON（如果提供）。
+
+注意：如果你更愿意直接使用主 extractor 并由它来写入映射，也可以：
+
+```powershell
+python -m src.dcm_extractor.extractor -d data/dicom_cases -o data/output_csv --merge-all --only-merged --move-top-level-zips --projectid-map data/output_csv/case_projectid_map.json
+```
+
 # DCM-information
 Dicom matadata transfer
