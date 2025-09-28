@@ -121,3 +121,34 @@ python -m src.dcm_extractor.extractor -d data/dicom_cases -o data/output_csv --m
 
 # DCM-information
 Dicom matadata transfer
+
+Quick Start (copy-paste)
+
+1) Create and activate virtual environment, install deps:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+2) Run safely with timeout wrapper (recommended):
+
+```powershell
+python scripts/process_cases_with_timeout.py -d data/dicom_cases -o data/output_csv --timeout 300 --move-top-level-zips --projectid-map data/output_csv/case_projectid_map.json
+```
+
+3) Quick checks after run:
+
+```powershell
+Get-Content data/output_csv/all_cases_original.csv -TotalCount 5
+Get-Content data/output_csv/all_cases_desensitized.csv -TotalCount 5
+Get-Content data/output_csv/case_projectid_map.json -Raw
+```
+
+4) If you need to re-run and keep per-case CSVs, run the main extractor without `--only-merged` and with `--merge-all`.
+
+Troubleshooting quick tips:
+- If a single case hangs, increase `--timeout` or inspect problematic zip files manually.
+- If ProjectID changes unexpectedly, always pass `--projectid-map` to reuse the saved mapping.
+
