@@ -1,6 +1,10 @@
 # Ignore data and logs directories (raw DICOM data and runtime logs should not be tracked)
-data/
-logs/
+# Ignore data and logs contents but keep the directory placeholders (.gitkeep)
+/data/*
+!/data/.gitkeep
+
+/logs/*
+!/logs/.gitkeep
 
 # Python
 __pycache__/
