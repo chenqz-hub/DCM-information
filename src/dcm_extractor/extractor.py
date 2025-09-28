@@ -316,6 +316,26 @@ def move_top_level_zips(data_root: Path) -> None:
             LOGGER.exception("Failed to move top-level zip: %s", z)
 
 
+def load_projectid_map(path: Path) -> Dict[str, int]:
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception:
+        LOGGER.exception("Failed to load projectid map: %s", path)
+    return {}
+
+
+def save_projectid_map(path: Path, mapping: Dict[str, int]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(mapping, fh, indent=2, ensure_ascii=False)
+        LOGGER.info("Wrote projectid map: %s", path)
+    except Exception:
+        LOGGER.exception("Failed to save projectid map: %s", path)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract DICOM metadata to CSV per case")
     parser.add_argument("--data-root", "-d", required=True, help="Root folder containing case subfolders")
@@ -334,6 +354,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not write per-case CSV files; only produce merged all_cases_original.csv and all_cases_desensitized.csv in the output folder",
     )
+    parser.add_argument(
+        "--projectid-map",
+        help="Path to a JSON file mapping case_name -> ProjectID. New cases will be assigned incremental IDs and the file will be updated.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", filename=args.log)
@@ -341,6 +365,10 @@ def main(argv: list[str] | None = None) -> int:
 
     data_root = Path(args.data_root)
     out_dir = Path(args.out)
+
+    # load or prepare project id mapping
+    map_path = Path(args.projectid_map) if getattr(args, "projectid_map", None) else out_dir / "case_projectid_map.json"
+    projectid_map: Dict[str, int] = load_projectid_map(map_path) if map_path else {}
 
     if not data_root.exists():
         LOGGER.error("Data root does not exist: %s", data_root)
@@ -354,12 +382,22 @@ def main(argv: list[str] | None = None) -> int:
             LOGGER.exception("Failed during moving top-level zips")
 
     merged_rows = []
-    # enumerate cases and assign sequential ProjectID starting at 1
-    for idx, case in enumerate(iter_case_dirs(data_root), start=1):
-        LOGGER.info("Processing case: %s", case)
+    # enumerate cases and assign ProjectID using mapping (stable across runs)
+    # if a case is not in the mapping, assign the next available integer (> max existing)
+    max_existing = max(projectid_map.values(), default=0)
+    for case in iter_case_dirs(data_root):
+        case_name = case.name
+        if case_name in projectid_map:
+            pid = projectid_map[case_name]
+        else:
+            max_existing += 1
+            pid = max_existing
+            projectid_map[case_name] = pid
+
+        LOGGER.info("Processing case: %s (ProjectID=%s)", case, pid)
         try:
             result = extract_case_metadata(
-                case, out_dir, desensitize=args.desensitize, project_id=idx, only_merged=args.only_merged
+                case, out_dir, desensitize=args.desensitize, project_id=pid, only_merged=args.only_merged
             )
 
             # if only_merged, extract_case_metadata returns a DataFrame; otherwise it returns the CSV path
@@ -414,6 +452,13 @@ def main(argv: list[str] | None = None) -> int:
                 LOGGER.exception("Failed to write desensitized merged CSV")
         except Exception:
             LOGGER.exception("Failed to write merged CSV")
+
+    # save mapping back to disk if used
+    try:
+        if map_path:
+            save_projectid_map(map_path, projectid_map)
+    except Exception:
+        LOGGER.exception("Failed saving projectid map")
 
     return 0
 
