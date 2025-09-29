@@ -115,6 +115,14 @@ def main(argv: list[str] | None = None) -> int:
             big[c] = None
     big = big.reindex(columns=extractor.FIXED_COLUMNS)
 
+    # Ensure ProjectID is numeric and sort by it ascending (put missing IDs last)
+    if "ProjectID" in big.columns:
+        try:
+            big["ProjectID"] = pd.to_numeric(big["ProjectID"], errors="coerce")
+            big = big.sort_values(by="ProjectID", ascending=True, na_position="last").reset_index(drop=True)
+        except Exception:
+            LOGGER.exception("Failed to sort by ProjectID; continuing without sort")
+
     big_path = out_dir / "all_cases_original.csv"
     big.to_csv(big_path, index=False)
     LOGGER.info("Wrote merged CSV (original): %s", big_path)
@@ -123,6 +131,14 @@ def main(argv: list[str] | None = None) -> int:
         des_big = big.copy()
         if "PatientName" in des_big.columns:
             des_big["PatientName"] = des_big["PatientName"].apply(lambda v: extractor.desensitize_name(v) if v else v)
+        # ensure desensitized CSV follows same ProjectID ordering
+        if "ProjectID" in des_big.columns:
+            try:
+                des_big["ProjectID"] = pd.to_numeric(des_big["ProjectID"], errors="coerce")
+                des_big = des_big.sort_values(by="ProjectID", ascending=True, na_position="last").reset_index(drop=True)
+            except Exception:
+                LOGGER.exception("Failed to sort desensitized DataFrame by ProjectID; continuing without sort")
+
         des_path = out_dir / "all_cases_desensitized.csv"
         des_big.to_csv(des_path, index=False)
         LOGGER.info("Wrote merged CSV (desensitized): %s", des_path)
